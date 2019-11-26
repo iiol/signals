@@ -39,6 +39,8 @@ main(void)
 	NkAllegro5Font *font;
 	struct nk_context *ctx;
 
+	init_test();
+
 	if (!al_init()) {
 		fprintf(stdout, "failed to initialize allegro5!\n");
 		exit(1);

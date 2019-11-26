@@ -1,10 +1,40 @@
+#include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <fcntl.h>
 #include <math.h>
+
+#include <sys/soundcard.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #define SIG_CS 4096
 #define SIG_MAXVAL (+5)
 #define SIG_MINVAL (-5)
 #define SIG_CNTVAL 1000
+
+#define AFMT AFMT_S16_NE
+#define CHNLS 1
+#define RATE 48000
+
+#define SYSCALL(estat, func, args...)					\
+({									\
+	int __ret;							\
+									\
+									\
+	while ((__ret = ((func)(args))) == -1 && errno == EINTR)		\
+		;							\
+									\
+	if (__ret == -1) {						\
+		perror(#func "(" #args ")");				\
+		exit(estat);						\
+	}								\
+									\
+	__ret;								\
+})
 
 #define sqr(x) ((double)(x)*(x))
 #define SWAP(a, b) do {typeof (a) __tmp = a; a = b; b = __tmp;} while (0)
@@ -14,6 +44,7 @@ enum sig_types {
 	SIN,
 	COS,
 	SQR,
+	MIC,
 	SOME,
 };
 
@@ -47,6 +78,8 @@ static float conv_hpf[CONV_HPF_CS] = {
 static float conv_fd[CONV_FD_CS] = {1, -1};
 
 
+static int mic_fd;
+
 static float signal[SIG_CS];
 static int graph[SIG_CNTVAL];
 
@@ -71,6 +104,7 @@ static void
 setsig(void) {
 	int i, j;
 	double di, dj;
+	int16_t sig[SIG_CS];
 
 	if (stop)
 		return;
@@ -97,6 +131,12 @@ setsig(void) {
 	case SOME:
 		for (i = di = dj = 0; i < SIG_CS; ++i, di += 0.1, dj += 0.01)
 			signal[i] = (cos(di) + sin(1.5*di) + sin(dj))/2;
+		break;
+
+	case MIC:
+		read(mic_fd, sig, SIG_CS * sizeof (int16_t));
+		for (i = 0; i < SIG_CS; ++i)
+			signal[i] = (float)sig[i]/INT16_MAX;
 		break;
 
 	case NOISE:
@@ -192,6 +232,41 @@ fft_rev(float *rex, float *imx, int n)
 	fft(rex, imx, n);
 
 	return 0;
+}
+
+static void
+init_test(void)
+{
+	int i;
+	int afmt, chnls, rate;
+	char *devname = "/dev/dsp";
+
+	mic_fd = open(devname, O_RDWR, 0);
+	if (mic_fd == -1) {
+		perror("Dev open error");
+		exit(1);
+	}
+
+	afmt = AFMT;
+	chnls = CHNLS;
+	rate = RATE;
+
+	rate = SYSCALL(1, ioctl, mic_fd, SNDCTL_DSP_SPEED, &rate);
+	chnls = SYSCALL(1, ioctl, mic_fd, SNDCTL_DSP_CHANNELS, &chnls);
+	afmt = SYSCALL(1, ioctl, mic_fd, SNDCTL_DSP_SETFMT, &afmt);
+
+	if (rate != 0 && rate < RATE) {
+		fprintf(stderr, "Device doesn't support rate.\n");
+		exit(1);
+	}
+	if (chnls != 0 && chnls < CHNLS) {
+		fprintf(stderr, "Device doesn't support %d channel(s).\n", chnls);
+		exit(1);
+	}
+	if (afmt != 0 && afmt < AFMT) {
+		fprintf(stderr, "Device doesn't support format.\n");
+		exit(1);
+	}
 }
 
 static void
@@ -396,6 +471,8 @@ test(struct nk_context *ctx)
 			sigtype = SQR;
 		if (nk_option_label(ctx, "some", sigtype == SOME))
 			sigtype = SOME;
+		if (nk_option_label(ctx, "mic", sigtype == MIC))
+			sigtype = MIC;
 
 		nk_layout_row_dynamic(ctx, 20, 1);
 		nk_label(ctx, "Свёртки:", NK_TEXT_LEFT);

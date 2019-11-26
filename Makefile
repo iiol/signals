@@ -1,6 +1,6 @@
 TARGET = a.out
 
-CFLAGS = -pedantic -I include #-O2
+CFLAGS = -I include #-O2
 LFLAGS = -lm -lallegro -lallegro_main -lallegro_image -lallegro_font \
 	-lallegro_ttf -lallegro_primitives -lm
 
