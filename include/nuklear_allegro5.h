@@ -94,6 +94,8 @@ nk_allegro5_font_create_from_file(const char *file_name, int font_size, int flag
 static float
 nk_allegro5_font_get_text_width(nk_handle handle, float height, const char *text, int len)
 {
+    (void)height;
+
     NkAllegro5Font *font = (NkAllegro5Font*)handle.ptr;
     if (!font || !text) {
         return 0;
