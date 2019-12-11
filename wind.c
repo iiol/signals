@@ -94,6 +94,23 @@ static struct links *links;
 static int oss_fd;
 
 
+struct links*
+find_link(struct node *from, struct node *to, int fcon, int tcon)
+{
+	struct links *link;
+
+	list_foreach (links, link) {
+		if ((from == NULL || from == link->from) &&
+		    (to   == NULL || to   == link->to  ) &&
+		    (fcon == -1   || fcon == link->fcon) &&
+		    (tcon == -1   || tcon == link->tcon)) {
+			return link;
+		}
+	}
+
+	return NULL;
+}
+
 void
 gensin(struct node *node)
 {
@@ -112,18 +129,15 @@ void
 genmic(struct node *node)
 {
 	int i;
-	size_t size;
-	int16_t *buf;
-
-	size = node->out[0]->samples * sizeof (int16_t);
-	buf = alloca(size);
+	int16_t buf[node->out[0]->samples];
 
 	if (node->out[0]->bufsize < node->out[0]->samples) {
 		node->out[0]->bufsize = node->out[0]->samples;
 		node->out[0]->buf = realloc(node->out[0]->buf, node->out[0]->bufsize * sizeof (float));
 	}
 
-	read(oss_fd, buf, size);
+	read(oss_fd, buf, node->out[0]->samples * sizeof (int16_t));
+
 	for (i = 0; i < node->out[0]->samples; ++i)
 		node->out[0]->buf[i] = (float)node->gain*buf[i]/INT16_MAX;
 }
@@ -167,11 +181,15 @@ signal_proc(void)
 			break;
 
 		case WIND_GEN_SIN:
-			gensin(node);
+			if (find_link(node, NULL, -1, -1) != NULL)
+				gensin(node);
+
 			break;
 
 		case WIND_GEN_MIC:
-			genmic(node);
+			if (find_link(node, NULL, -1, -1) != NULL)
+				genmic(node);
+
 			break;
 
 		case WIND_FFT:
@@ -179,6 +197,7 @@ signal_proc(void)
 
 		case WIND_TEE:
 			tee_proc(node);
+
 			break;
 		}
 	}
