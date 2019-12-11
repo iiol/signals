@@ -24,10 +24,23 @@
 
 enum windtypes {
 	WIND_MENU,
+
+	// generators
 	WIND_GEN_SIN,
 	WIND_GEN_MIC,
+
+	// filters
+	WIND_FFT,
 	WIND_TEE,
+
+	// plot
 	WIND_PLOT,
+};
+
+struct connector {
+	int samples;
+	int bufsize;
+	float *buf;
 };
 
 struct node {
@@ -37,10 +50,8 @@ struct node {
 	int x, y, h, w;
 	int icon, ocon;
 
-	// signal settings
-	int samples;
-	int bufsize;
-	float *buf;
+	struct connector **inp; // array pointers to input connectors
+	struct connector **out; // array pointers to output connectors
 
 	union {
 		// sine settings
@@ -88,13 +99,13 @@ gensin(struct node *node)
 {
 	int i;
 
-	if (node->bufsize < node->samples) {
-		node->bufsize = node->samples;
-		node->buf = realloc(node->buf, node->bufsize * sizeof (float));
+	if (node->out[0]->bufsize < node->out[0]->samples) {
+		node->out[0]->bufsize = node->out[0]->samples;
+		node->out[0]->buf = realloc(node->out[0]->buf, node->out[0]->bufsize * sizeof (float));
 	}
 
-	for (i = 0; i < node->samples; ++i)
-		node->buf[i] = sin(2.0*NK_PI*i*node->step/node->samples);
+	for (i = 0; i < node->out[0]->samples; ++i)
+		node->out[0]->buf[i] = sin(2.0*NK_PI*i*node->step/node->out[0]->samples);
 }
 
 void
@@ -104,17 +115,43 @@ genmic(struct node *node)
 	size_t size;
 	int16_t *buf;
 
-	size = node->samples * sizeof (int16_t);
+	size = node->out[0]->samples * sizeof (int16_t);
 	buf = alloca(size);
 
-	if (node->bufsize < node->samples) {
-		node->bufsize = node->samples;
-		node->buf = realloc(node->buf, node->bufsize * sizeof (float));
+	if (node->out[0]->bufsize < node->out[0]->samples) {
+		node->out[0]->bufsize = node->out[0]->samples;
+		node->out[0]->buf = realloc(node->out[0]->buf, node->out[0]->bufsize * sizeof (float));
 	}
 
 	read(oss_fd, buf, size);
-	for (i = 0; i < node->samples; ++i)
-		node->buf[i] = (float)buf[i]/INT16_MAX;
+	for (i = 0; i < node->out[0]->samples; ++i)
+		node->out[0]->buf[i] = (float)node->gain*buf[i]/INT16_MAX;
+}
+
+void
+tee_proc(struct node *node)
+{
+	size_t size;
+
+	if (node->inp[0] == NULL)
+		return;
+
+	if (node->out[0]->bufsize < node->inp[0]->samples) {
+		size = node->inp[0]->samples * sizeof (float);
+		node->out[0]->bufsize = node->inp[0]->samples;
+		node->out[0]->buf = realloc(node->out[0]->buf, size);
+	}
+	if (node->out[1]->bufsize < node->inp[0]->samples) {
+		size = node->inp[0]->samples * sizeof (float);
+		node->out[1]->bufsize = node->inp[0]->samples;
+		node->out[1]->buf = realloc(node->out[1]->buf, size);
+	}
+
+	size = node->inp[0]->samples * sizeof (float);
+	memcpy(node->out[0]->buf, node->inp[0]->buf, size);
+	memcpy(node->out[1]->buf, node->inp[0]->buf, size);
+	node->out[0]->samples = node->inp[0]->samples;
+	node->out[1]->samples = node->inp[0]->samples;
 }
 
 // TODO
@@ -122,23 +159,28 @@ void
 signal_proc(void)
 {
 	struct node *node;
-	struct links *link;
 
 	list_foreach (wind_nodes, node) {
-		if (node->type == WIND_GEN_SIN)
+		switch (node->type) {
+		case WIND_MENU:
+		case WIND_PLOT:
+			break;
+
+		case WIND_GEN_SIN:
 			gensin(node);
-		else if (node->type == WIND_GEN_MIC)
+			break;
+
+		case WIND_GEN_MIC:
 			genmic(node);
-	}
+			break;
 
-	list_foreach (links, link) {
-		if (link->to->bufsize < link->from->samples) {
-			link->to->bufsize = link->from->samples;
-			link->to->buf = xrealloc(link->to->buf, link->to->bufsize * sizeof (float));
+		case WIND_FFT:
+			break;
+
+		case WIND_TEE:
+			tee_proc(node);
+			break;
 		}
-
-		memcpy(link->to->buf, link->from->buf, link->from->samples * sizeof (float));
-		link->to->samples = link->from->samples;
 	}
 }
 
@@ -153,13 +195,15 @@ node_init(void)
 	wind_nodes->type = WIND_MENU;
 	wind_nodes->name = "menu";
 
-	wind_nodes->x = wind_nodes->y = 0;
+	wind_nodes->x = 0;
+	wind_nodes->y = 0;
 	wind_nodes->h = 400;
 	wind_nodes->w = 250;
-	wind_nodes->icon = wind_nodes->ocon = 0;
 
-	wind_nodes->samples = wind_nodes->bufsize = 0;
-	wind_nodes->buf = NULL;
+	wind_nodes->icon = 0;
+	wind_nodes->ocon = 0;
+	wind_nodes->inp = NULL;
+	wind_nodes->out = NULL;
 
 	nodecount = 1;
 
@@ -207,9 +251,11 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->icon = 0;
 		node->ocon = 1;
 
-		node->samples = 512;
-		node->bufsize = 0;
-		node->buf = NULL;
+		node->out = xmalloc(sizeof (struct connector*));
+		node->out[0] = xmalloc(sizeof (struct connector));
+		node->out[0]->samples = 512;
+		node->out[0]->bufsize = 0;
+		node->out[0]->buf = NULL;
 
 		node->step = 1;
 
@@ -227,9 +273,12 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->icon = 0;
 		node->ocon = 1;
 
-		node->samples = 1024;
-		node->bufsize = 0;
-		node->buf = NULL;
+		node->inp = NULL;
+		node->out = xmalloc(sizeof (struct connector*));
+		node->out[0] = xmalloc(sizeof (struct connector));
+		node->out[0]->samples = 1024;
+		node->out[0]->bufsize = 0;
+		node->out[0]->buf = NULL;
 
 		node->gain = 1.0;
 
@@ -247,8 +296,43 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->icon = 1;
 		node->ocon = 2;
 
-		node->samples = node->bufsize = 0;
-		node->buf = NULL;
+		node->inp = xmalloc(sizeof (struct connector*));
+		node->inp[0] = NULL;
+		node->out = xmalloc(2 * sizeof (struct connector*));
+		node->out[0] = xmalloc(sizeof (struct connector));
+		node->out[0]->samples = 0;
+		node->out[0]->bufsize = 0;
+		node->out[0]->buf = NULL;
+		node->out[1] = xmalloc(sizeof (struct connector));
+		node->out[1]->samples = 0;
+		node->out[1]->bufsize = 0;
+		node->out[1]->buf = NULL;
+
+		++nodecount;
+	}
+	if (nk_button_label(ctx, "FFT")) {
+		node = list_alloc_at_end(wind_nodes);
+
+		node->type = WIND_FFT;
+		node->name = "FFT";
+
+		node->x = node->y = 0;
+		node->h = 150;
+		node->w = 150;
+		node->icon = 1;
+		node->ocon = 2;
+
+		node->inp = xmalloc(sizeof (struct connecotr*));
+		node->inp[0] = NULL;
+		node->out = xmalloc(2 * sizeof (struct connector*));
+		node->out[0] = xmalloc(sizeof (struct connector));
+		node->out[0]->samples = 0;
+		node->out[0]->bufsize = 0;
+		node->out[0]->buf = NULL;
+		node->out[1] = xmalloc(sizeof (struct connector));
+		node->out[1]->samples = 0;
+		node->out[1]->bufsize = 0;
+		node->out[1]->buf = NULL;
 
 		++nodecount;
 	}
@@ -264,8 +348,9 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->icon = 1;
 		node->ocon = 0;
 
-		node->samples = node->bufsize = 0;
-		node->buf = NULL;
+		node->inp = xmalloc(sizeof (struct connector*));
+		node->inp[0] = NULL;
+
 		node->maxval =  1;
 		node->minval = -1;
 
@@ -282,9 +367,9 @@ gensin_content(struct nk_context *ctx, struct node *node)
 	sprintf(text, "Frequency: %.2f", node->step);
 	nk_label(ctx, text, NK_TEXT_LEFT);
 	nk_slider_float(ctx, 0, &node->step, 10, 0.01);
-	sprintf(text, "Samples: %d", node->samples);
+	sprintf(text, "Samples: %d", node->out[0]->samples);
 	nk_label(ctx, text, NK_TEXT_LEFT);
-	nk_slider_int(ctx, 0, &node->samples, 4096, 16);
+	nk_slider_int(ctx, 0, &node->out[0]->samples, 4096, 16);
 }
 
 static void
@@ -303,13 +388,25 @@ plot_content(struct nk_context *ctx, struct node *node)
 {
 	int i;
 	char text[512];
+	int samples;
 
 	nk_layout_row_dynamic(ctx, 100, 1);
-	if (nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
-	    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), node->samples,
-	    node->minval, node->maxval)) {
-		for (i = 0; i < node->samples; ++i)
-			nk_chart_push_slot(ctx, node->buf[i], 0);
+	if (node->inp[0] != NULL) {
+		if (nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
+		    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), node->inp[0]->samples,
+		    node->minval, node->maxval)) {
+			for (i = 0; i < node->inp[0]->samples; ++i)
+				nk_chart_push_slot(ctx, node->inp[0]->buf[i], 0);
+		}
+
+		samples = node->inp[0]->samples;
+	}
+	else { // TODO: May be bug
+		if (nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
+		    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), 0, -1, 1)) {
+		}
+
+		samples = 0;
 	}
 
 	nk_layout_row_dynamic(ctx, 15, 2);
@@ -317,7 +414,7 @@ plot_content(struct nk_context *ctx, struct node *node)
 	nk_label(ctx, text, NK_TEXT_LEFT);
 	sprintf(text, "Min value: %d", node->minval);
 	nk_label(ctx, text, NK_TEXT_LEFT);
-	sprintf(text, "Samples: %d", node->samples);
+	sprintf(text, "Samples: %d", samples);
 	nk_label(ctx, text, NK_TEXT_LEFT);
 }
 
@@ -355,6 +452,9 @@ node_editor(struct nk_context *ctx)
 			case WIND_TEE:
 				break;
 
+			case WIND_FFT:
+				break;
+
 			case WIND_GEN_MIC:
 				genmic_content(ctx, node);
 				break;
@@ -388,9 +488,12 @@ node_editor(struct nk_context *ctx)
 			// start linking process
 			if (nk_input_has_mouse_click_down_in_rect(&ctx->input,
 			    NK_BUTTON_LEFT, circle, 1)) {
-				list_foreach (links, link)
-					if (link->from == node && link->fcon == i)
+				list_foreach (links, link) {
+					if (link->from == node && link->fcon == i) {
+						link->to->inp[link->tcon] = NULL;
 						links = list_delete(link);
+					}
+				}
 
 				linking.node = node;
 				linking.slot = i;
@@ -425,6 +528,8 @@ node_editor(struct nk_context *ctx)
 				list_foreach (links, link)
 					if (link->to == node && link->tcon == i)
 						links = list_delete(link);
+
+				node->inp[i] = linking.node->out[linking.slot];
 
 				link = list_alloc_at_end(links);
 				link->from = linking.node;

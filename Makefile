@@ -9,7 +9,7 @@ OBJ = $(SRC:.c=.o)
 
 .PHONY: clean
 
-$(TARGET): $(SRC) file.c style.c
+$(TARGET): $(SRC) wind.c style.c
 	$(CC) $(CFLAGS) $(LFLAGS) -o $(TARGET) $(SRC)
 
 clean:
