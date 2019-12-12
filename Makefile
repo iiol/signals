@@ -4,13 +4,13 @@ CFLAGS = -pedantic -I include -ggdb -Wall -Wextra -Wno-pedantic -std=c99 -fplan9
 LFLAGS = -lm -lallegro -lallegro_main -lallegro_image -lallegro_font \
 	-lallegro_ttf -lallegro_primitives -lm
 
-SRC = main.c
+SRC = main.c wind.c style.c
 OBJ = $(SRC:.c=.o)
 
 .PHONY: clean
 
-$(TARGET): $(SRC) wind.c style.c
-	$(CC) $(CFLAGS) $(LFLAGS) -o $(TARGET) $(SRC)
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) $(LFLAGS) -o $(TARGET) $<
 
 clean:
 	rm $(TARGET)

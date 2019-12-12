@@ -66,7 +66,7 @@ struct node {
 
 		// plot settings
 		struct {
-			int minval, maxval;
+			float minval, maxval;
 		};
 	};
 
@@ -94,7 +94,7 @@ static struct links *links;
 static int oss_fd;
 
 
-struct links*
+static struct links*
 find_link(struct node *from, struct node *to, int fcon, int tcon)
 {
 	struct links *link;
@@ -111,7 +111,70 @@ find_link(struct node *from, struct node *to, int fcon, int tcon)
 	return NULL;
 }
 
-void
+static int
+fft(float *rex, float *imx, int n)
+{
+	int i, ip, j, k;
+
+	if (n <= 0 || rex == NULL || imx == NULL)
+		return -1;
+
+	for (i = 1, j = n/2; i < n - 1; ++i, j += k) {
+		if (i < j) {
+			SWAP(rex[i], rex[j]);
+			SWAP(imx[i], imx[j]);
+		}
+
+		for (k = n/2; k <= j; j -= k, k /= 2)
+			;
+	}
+
+	for (i = 1; i <= log2(n); i++) {					//Each stage
+		int le;
+		float si, sr, ti, tr, ui, ur;
+
+		le = pow(2, i - 1);
+		sr = cos(NK_PI / le);
+		si = -sin(NK_PI / le);
+		ur = 1;
+		ui = 0;
+
+		for (j = 1; j <= le; j++) {				//Each SUB DFT
+			for (k = j - 1; k < n; k += 2*le) {		//Each butterfly
+				ip = k + le;				//Butterfly
+				tr = rex[ip] * ur - imx[ip] * ui;
+				ti = rex[ip] * ui + imx[ip] * ur;
+
+				rex[ip] = rex[k] - tr;
+				imx[ip] = imx[k] - ti;
+
+				rex[k] = rex[k] + tr;
+				imx[k] = imx[k] + ti;
+			}
+
+			tr = ur;
+			ur  = tr * sr - ui * si;
+			ui = tr * si + ui * sr;
+		}
+	}
+
+	return 0;
+}
+
+static int
+fft_rev(float *rex, float *imx, int n)
+{
+	int i;
+
+	for (i = 0; i < n; ++i)
+		imx[i] = -imx[i];
+
+	fft(rex, imx, n);
+
+	return 0;
+}
+
+static void
 gensin(struct node *node)
 {
 	int i;
@@ -125,7 +188,7 @@ gensin(struct node *node)
 		node->out[0]->buf[i] = sin(2.0*NK_PI*i*node->step/node->out[0]->samples);
 }
 
-void
+static void
 genmic(struct node *node)
 {
 	int i;
@@ -142,7 +205,7 @@ genmic(struct node *node)
 		node->out[0]->buf[i] = (float)node->gain*buf[i]/INT16_MAX;
 }
 
-void
+static void
 tee_proc(struct node *node)
 {
 	size_t size;
@@ -168,8 +231,36 @@ tee_proc(struct node *node)
 	node->out[1]->samples = node->inp[0]->samples;
 }
 
+static void
+fft_proc(struct node *node)
+{
+	size_t size;
+	int samples;
+
+	if (node->inp[0] == NULL)
+		return;
+
+	samples = pow(2, (int)log2(node->inp[0]->samples));
+	size = samples * sizeof (float);
+
+	if (node->out[0]->bufsize < samples) {
+		node->out[0]->bufsize = samples;
+		node->out[0]->buf = realloc(node->out[0]->buf, size);
+	}
+	if (node->out[1]->bufsize < node->inp[0]->samples) {
+		node->out[1]->bufsize = samples;
+		node->out[1]->buf = realloc(node->out[1]->buf, size);
+	}
+
+	memcpy(node->out[0]->buf, node->inp[0]->buf, size);
+	memset(node->out[1]->buf, 0, size);
+	fft(node->out[0]->buf, node->out[1]->buf, samples);
+	node->out[0]->samples = samples/2;
+	node->out[1]->samples = samples/2;
+}
+
 // TODO
-void
+static void
 signal_proc(void)
 {
 	struct node *node;
@@ -193,6 +284,8 @@ signal_proc(void)
 			break;
 
 		case WIND_FFT:
+			fft_proc(node);
+
 			break;
 
 		case WIND_TEE:
@@ -252,7 +345,7 @@ node_init(void)
 	return 0;
 }
 
-void
+static void
 menu_content(struct nk_context *ctx, struct node *node)
 {
 	nk_layout_row_dynamic(ctx, 25, 1);
@@ -370,8 +463,8 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->inp = xmalloc(sizeof (struct connector*));
 		node->inp[0] = NULL;
 
-		node->maxval =  1;
-		node->minval = -1;
+		node->maxval =  1.0;
+		node->minval = -1.0;
 
 		++nodecount;
 	}
@@ -414,8 +507,16 @@ plot_content(struct nk_context *ctx, struct node *node)
 		if (nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
 		    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), node->inp[0]->samples,
 		    node->minval, node->maxval)) {
-			for (i = 0; i < node->inp[0]->samples; ++i)
-				nk_chart_push_slot(ctx, node->inp[0]->buf[i], 0);
+			float *buf = node->inp[0]->buf;
+
+			for (i = 0; i < node->inp[0]->samples; ++i) {
+				if (buf[i] >= node->maxval)
+					nk_chart_push_slot(ctx, node->maxval, 0);
+				else if (buf[i] <= node->minval)
+					nk_chart_push_slot(ctx, node->minval, 0);
+				else
+					nk_chart_push_slot(ctx, node->inp[0]->buf[i], 0);
+			}
 		}
 
 		samples = node->inp[0]->samples;
@@ -429,12 +530,14 @@ plot_content(struct nk_context *ctx, struct node *node)
 	}
 
 	nk_layout_row_dynamic(ctx, 15, 2);
-	sprintf(text, "Max value: %d", node->maxval);
+	sprintf(text, "Max value: %.2f", node->maxval);
 	nk_label(ctx, text, NK_TEXT_LEFT);
-	sprintf(text, "Min value: %d", node->minval);
+	sprintf(text, "Min value: %.2f", node->minval);
 	nk_label(ctx, text, NK_TEXT_LEFT);
 	sprintf(text, "Samples: %d", samples);
 	nk_label(ctx, text, NK_TEXT_LEFT);
+	nk_slider_float(ctx, 1, &node->maxval, 40, 1);
+	node->minval = -node->maxval;
 }
 
 static int
@@ -444,8 +547,8 @@ node_editor(struct nk_context *ctx)
 	struct node *node;
 	struct nk_command_buffer *canvas;
 	struct nk_rect total_space;
-	size_t flags = NK_WINDOW_CLOSABLE | NK_WINDOW_MOVABLE |
-	    NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_BORDER | NK_WINDOW_TITLE;
+	size_t flags = NK_WINDOW_MOVABLE | NK_WINDOW_NO_SCROLLBAR |
+	    NK_WINDOW_BORDER | NK_WINDOW_TITLE;// | NK_WINDOW_CLOSABLE;
 	struct links *link;
 
 	canvas = nk_window_get_canvas(ctx);
