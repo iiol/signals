@@ -23,8 +23,7 @@
 									\
 	if (__ret == -1) {						\
 		perror(#func "(" #__VA_ARGS__ ")");			\
-		if (estat != 0)						\
-			exit(estat);					\
+		exit(estat);						\
 	}								\
 									\
 	__ret;								\

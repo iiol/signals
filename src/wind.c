@@ -31,6 +31,7 @@ enum windtypes {
 
 	// filters
 	WIND_FFT,
+	WIND_REV_FFT,
 	WIND_TEE,
 
 	// plot
@@ -288,6 +289,11 @@ signal_proc(void)
 
 			break;
 
+		case WIND_REV_FFT:
+			//rev_fft_proc(node);
+
+			break;
+
 		case WIND_TEE:
 			tee_proc(node);
 
@@ -320,7 +326,10 @@ node_init(void)
 	nodecount = 1;
 
 	// oss init
-	oss_fd = SYSCALL(0, open, devname, O_RDWR);
+	oss_fd = open(devname, O_RDWR);
+	if (oss_fd == -1)
+		return 0;
+
 	afmt = AFMT;
 	chnls = CHNLS;
 	rate = RATE;
@@ -365,9 +374,8 @@ menu_content(struct nk_context *ctx, struct node *node)
 
 		node->out = xmalloc(sizeof (struct connector*));
 		node->out[0] = xmalloc(sizeof (struct connector));
+		memset(node->out[0], 0, sizeof (struct connector));
 		node->out[0]->samples = 512;
-		node->out[0]->bufsize = 0;
-		node->out[0]->buf = NULL;
 
 		node->step = 1;
 
@@ -388,9 +396,8 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->inp = NULL;
 		node->out = xmalloc(sizeof (struct connector*));
 		node->out[0] = xmalloc(sizeof (struct connector));
+		memset(node->out[0], 0, sizeof (struct connector));
 		node->out[0]->samples = 1024;
-		node->out[0]->bufsize = 0;
-		node->out[0]->buf = NULL;
 
 		node->gain = 1.0;
 
@@ -412,13 +419,9 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->inp[0] = NULL;
 		node->out = xmalloc(2 * sizeof (struct connector*));
 		node->out[0] = xmalloc(sizeof (struct connector));
-		node->out[0]->samples = 0;
-		node->out[0]->bufsize = 0;
-		node->out[0]->buf = NULL;
+		memset(node->out[0], 0, sizeof (struct connector));
 		node->out[1] = xmalloc(sizeof (struct connector));
-		node->out[1]->samples = 0;
-		node->out[1]->bufsize = 0;
-		node->out[1]->buf = NULL;
+		memset(node->out[1], 0, sizeof (struct connector));
 
 		++nodecount;
 	}
@@ -434,17 +437,36 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->icon = 1;
 		node->ocon = 2;
 
-		node->inp = xmalloc(sizeof (struct connecotr*));
+		node->inp = xmalloc(sizeof (struct connector*));
 		node->inp[0] = NULL;
 		node->out = xmalloc(2 * sizeof (struct connector*));
 		node->out[0] = xmalloc(sizeof (struct connector));
-		node->out[0]->samples = 0;
-		node->out[0]->bufsize = 0;
-		node->out[0]->buf = NULL;
+		memset(node->out[0], 0, sizeof (struct connector));
 		node->out[1] = xmalloc(sizeof (struct connector));
-		node->out[1]->samples = 0;
-		node->out[1]->bufsize = 0;
-		node->out[1]->buf = NULL;
+		memset(node->out[1], 0, sizeof (struct connector));
+
+		++nodecount;
+	}
+	if (nk_button_label(ctx, "Reverse FFT")) {
+		node = list_alloc_at_end(wind_nodes);
+
+		node->type = WIND_REV_FFT;
+		node->name = "Reverse FFT";
+
+		node->x = node->y = 0;
+		node->h = 150;
+		node->w = 150;
+		node->icon = 2;
+		node->ocon = 1;
+
+		node->inp = xmalloc(2 * sizeof (struct connector*));
+		node->inp[0] = NULL;
+
+		node->out = xmalloc(sizeof (struct connector*));
+		node->out[0] = xmalloc(sizeof (struct connector));
+		memset(node->out[0], 0, sizeof (struct connector));
+		node->out[1] = xmalloc(sizeof (struct connector));
+		memset(node->out[0], 0, sizeof (struct connector));
 
 		++nodecount;
 	}
@@ -515,16 +537,15 @@ plot_content(struct nk_context *ctx, struct node *node)
 				else if (buf[i] <= node->minval)
 					nk_chart_push_slot(ctx, node->minval, 0);
 				else
-					nk_chart_push_slot(ctx, node->inp[0]->buf[i], 0);
+					nk_chart_push_slot(ctx, buf[i], 0);
 			}
 		}
 
 		samples = node->inp[0]->samples;
 	}
-	else { // TODO: May be bug
-		if (nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
-		    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), 0, -1, 1)) {
-		}
+	else {
+		nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
+		    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), 0, -1, 1);
 
 		samples = 0;
 	}

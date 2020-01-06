@@ -1,4 +1,7 @@
 a.out
+
+# vim stuff
 *.swp
 *.swo
 tags
+.ycm_extra_conf.py
