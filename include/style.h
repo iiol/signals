@@ -1,3 +1,5 @@
+#include "nk.h"
+
 enum theme {
 	THEME_BLACK,
 	THEME_WHITE,

@@ -8,24 +8,14 @@
 #include <limits.h>
 #include <time.h>
 
-#include <allegro5/allegro.h>
-
-#define NK_INCLUDE_FIXED_TYPES
-#define NK_INCLUDE_STANDARD_IO
-#define NK_INCLUDE_STANDARD_VARARGS
-#define NK_INCLUDE_DEFAULT_ALLOCATOR
 #define NK_IMPLEMENTATION
 #define NK_ALLEGRO5_IMPLEMENTATION
-#include "nuklear.h"
-#include "nuklear_allegro5.h"
-#include "style.c"
-#include "wind.c"
+#include "nk.h"
 
+#include "style.h"
+#include "wind.h"
+#include "macro.h"
 
-#define UNUSED(a) (void)a
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-#define MAX(a,b) ((a) < (b) ? (b) : (a))
-#define LEN(a) (sizeof(a)/sizeof(a)[0])
 
 #define WINDOW_WIDTH 1200
 #define WINDOW_HEIGHT 800
@@ -39,7 +29,7 @@ main(void)
 	NkAllegro5Font *font;
 	struct nk_context *ctx;
 
-	node_init();
+	wind_init();
 
 	if (!al_init()) {
 		fprintf(stderr, "failed to initialize allegro5!\n");
@@ -98,7 +88,7 @@ main(void)
 
 		if (nk_begin(ctx, "Hack window", nk_rect(0, 0, info.x2-info.x1,
 		    info.y2-info.y1), NK_WINDOW_NO_SCROLLBAR))
-			node_editor(ctx);
+			wind_draw(ctx);
 		nk_end(ctx);
 
 		/* Draw */

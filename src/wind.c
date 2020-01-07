@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <sys/soundcard.h>
 
+#include "nk.h"
 #include "macro.h"
 
 #define CIRC_RAD 5
@@ -70,15 +71,11 @@ struct node {
 			float minval, maxval;
 		};
 	};
-
-	struct list_node _list;
 };
 
 struct links {
 	struct node *from, *to;
 	int fcon, tcon;
-
-	struct list_node _list;
 };
 
 struct linking {
@@ -104,12 +101,11 @@ find_link(struct node *from, struct node *to, int fcon, int tcon)
 		if ((from == NULL || from == link->from) &&
 		    (to   == NULL || to   == link->to  ) &&
 		    (fcon == -1   || fcon == link->fcon) &&
-		    (tcon == -1   || tcon == link->tcon)) {
-			return link;
-		}
+		    (tcon == -1   || tcon == link->tcon))
+			break;
 	}
 
-	return NULL;
+	return link;
 }
 
 static int
@@ -186,7 +182,7 @@ gensin(struct node *node)
 	}
 
 	for (i = 0; i < node->out[0]->samples; ++i)
-		node->out[0]->buf[i] = sin(2.0*NK_PI*i*node->step/node->out[0]->samples);
+		node->out[0]->buf[i] = sin(2.0f*NK_PI*i*node->step/node->out[0]->samples);
 }
 
 static void
@@ -302,13 +298,13 @@ signal_proc(void)
 	}
 }
 
-static int
-node_init(void)
+int
+wind_init(void)
 {
 	int afmt, chnls, rate;
 	char *devname = OSS_DEVNAME;
 
-	wind_nodes = list_init(wind_nodes);
+	wind_nodes = list_new(wind_nodes);
 
 	wind_nodes->type = WIND_MENU;
 	wind_nodes->name = "menu";
@@ -561,8 +557,8 @@ plot_content(struct nk_context *ctx, struct node *node)
 	node->minval = -node->maxval;
 }
 
-static int
-node_editor(struct nk_context *ctx)
+int
+wind_draw(struct nk_context *ctx)
 {
 	int i;
 	struct node *node;
@@ -578,41 +574,45 @@ node_editor(struct nk_context *ctx)
 
 	list_foreach (wind_nodes, node) {
 		struct nk_rect bounds;
-		struct nk_panel *panel;
 		float space;
 		struct nk_rect circle;
+		struct nk_panel *panel;
 
 		nk_layout_space_push(ctx, nk_rect(node->x, node->y, node->w, node->h));
 
-		if (nk_group_begin(ctx, node->name, flags)) {
-			panel = nk_window_get_panel(ctx);
+		if (!nk_group_begin(ctx, node->name, flags))
+			continue;
 
-			switch (node->type) {
-			case WIND_MENU:
-				menu_content(ctx, node);
-				break;
+		panel = nk_window_get_panel(ctx);
 
-			case WIND_TEE:
-				break;
+		switch (node->type) {
+		case WIND_MENU:
+			menu_content(ctx, node);
+			break;
 
-			case WIND_FFT:
-				break;
+		case WIND_TEE:
+			break;
 
-			case WIND_GEN_MIC:
-				genmic_content(ctx, node);
-				break;
+		case WIND_FFT:
+			break;
 
-			case WIND_GEN_SIN:
-				gensin_content(ctx, node);
-				break;
+		case WIND_REV_FFT:
+			break;
 
-			case WIND_PLOT:
-				plot_content(ctx, node);
-				break;
-			}
+		case WIND_GEN_MIC:
+			genmic_content(ctx, node);
+			break;
 
-			nk_group_end(ctx);
+		case WIND_GEN_SIN:
+			gensin_content(ctx, node);
+			break;
+
+		case WIND_PLOT:
+			plot_content(ctx, node);
+			break;
 		}
+
+		nk_group_end(ctx);
 
 		bounds = nk_layout_space_rect_to_local(ctx, panel->bounds);
 		node->x = bounds.x;
@@ -634,7 +634,8 @@ node_editor(struct nk_context *ctx)
 				list_foreach (links, link) {
 					if (link->from == node && link->fcon == i) {
 						link->to->inp[link->tcon] = NULL;
-						links = list_delete(link);
+						links = list_free(link);
+						break;
 					}
 				}
 
@@ -670,11 +671,12 @@ node_editor(struct nk_context *ctx)
 			    linking.node != node) {
 				list_foreach (links, link)
 					if (link->to == node && link->tcon == i)
-						links = list_delete(link);
+						links = list_free(link);
 
 				node->inp[i] = linking.node->out[linking.slot];
 
 				link = list_alloc_at_end(links);
+				links = list_get_head(link);
 				link->from = linking.node;
 				link->fcon = linking.slot;
 				link->to = node;
