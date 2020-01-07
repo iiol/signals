@@ -21,6 +21,9 @@
 #define CHNLS 1
 #define RATE 48000
 #define OSS_DEVNAME "/dev/dsp"
+#define MICBUF_SAMPLES 2048
+
+float micbuf[MICBUF_SAMPLES];
 
 
 enum windtypes {
@@ -55,15 +58,19 @@ struct node {
 	struct connector **inp; // array pointers to input connectors
 	struct connector **out; // array pointers to output connectors
 
+	int processed;
+
 	union {
 		// sine settings
 		struct {
 			float step;
+			int sine_samples;
 		};
 
 		// mic settings;
 		struct {
 			float gain;
+			int mic_samples;
 		};
 
 		// plot settings
@@ -126,7 +133,7 @@ fft(float *rex, float *imx, int n)
 			;
 	}
 
-	for (i = 1; i <= log2(n); i++) {					//Each stage
+	for (i = 1; i <= log2(n); i++) {				//Each stage
 		int le;
 		float si, sr, ti, tr, ui, ur;
 
@@ -159,14 +166,16 @@ fft(float *rex, float *imx, int n)
 }
 
 static int
-fft_rev(float *rex, float *imx, int n)
+rev_fft(float *rex, float *imx, int n)
 {
 	int i;
 
-	for (i = 0; i < n; ++i)
-		imx[i] = -imx[i];
-
 	fft(rex, imx, n);
+
+	for (i = 0; i < n; ++i) {
+		rex[i] /= n/2;
+		imx[i] /= n/2;
+	}
 
 	return 0;
 }
@@ -175,31 +184,33 @@ static void
 gensin(struct node *node)
 {
 	int i;
+	int samples = node->out[0]->samples;
 
-	if (node->out[0]->bufsize < node->out[0]->samples) {
-		node->out[0]->bufsize = node->out[0]->samples;
-		node->out[0]->buf = realloc(node->out[0]->buf, node->out[0]->bufsize * sizeof (float));
-	}
+	for (i = 0; i < samples; ++i)
+		node->out[0]->buf[i] = sin(2.0f*NK_PI*i*node->step/samples);
+}
 
-	for (i = 0; i < node->out[0]->samples; ++i)
-		node->out[0]->buf[i] = sin(2.0f*NK_PI*i*node->step/node->out[0]->samples);
+static void
+set_micbuf(void)
+{
+	int i;
+	int samples = MICBUF_SAMPLES;
+	int16_t buf[samples];
+
+	read(oss_fd, buf, samples * sizeof (int16_t));
+
+	for (i = 0; i < samples; ++i)
+		micbuf[i] = (float)buf[i]/INT16_MAX;
 }
 
 static void
 genmic(struct node *node)
 {
 	int i;
-	int16_t buf[node->out[0]->samples];
+	int samples = node->out[0]->samples;
 
-	if (node->out[0]->bufsize < node->out[0]->samples) {
-		node->out[0]->bufsize = node->out[0]->samples;
-		node->out[0]->buf = realloc(node->out[0]->buf, node->out[0]->bufsize * sizeof (float));
-	}
-
-	read(oss_fd, buf, node->out[0]->samples * sizeof (int16_t));
-
-	for (i = 0; i < node->out[0]->samples; ++i)
-		node->out[0]->buf[i] = (float)node->gain*buf[i]/INT16_MAX;
+	for (i = 0; i < samples; ++i)
+		node->out[0]->buf[i] = (float)node->gain * micbuf[i];
 }
 
 static void
@@ -210,92 +221,195 @@ tee_proc(struct node *node)
 	if (node->inp[0] == NULL)
 		return;
 
-	if (node->out[0]->bufsize < node->inp[0]->samples) {
-		size = node->inp[0]->samples * sizeof (float);
-		node->out[0]->bufsize = node->inp[0]->samples;
-		node->out[0]->buf = realloc(node->out[0]->buf, size);
-	}
-	if (node->out[1]->bufsize < node->inp[0]->samples) {
-		size = node->inp[0]->samples * sizeof (float);
-		node->out[1]->bufsize = node->inp[0]->samples;
-		node->out[1]->buf = realloc(node->out[1]->buf, size);
-	}
+	size = node->out[0]->samples * sizeof (float);
 
-	size = node->inp[0]->samples * sizeof (float);
 	memcpy(node->out[0]->buf, node->inp[0]->buf, size);
 	memcpy(node->out[1]->buf, node->inp[0]->buf, size);
-	node->out[0]->samples = node->inp[0]->samples;
-	node->out[1]->samples = node->inp[0]->samples;
 }
 
 static void
 fft_proc(struct node *node)
 {
-	size_t size;
 	int samples;
+	size_t size;
+	float *rex, *imx;
 
 	if (node->inp[0] == NULL)
 		return;
 
-	samples = pow(2, (int)log2(node->inp[0]->samples));
+	samples = 2 * node->out[0]->samples;
 	size = samples * sizeof (float);
 
-	if (node->out[0]->bufsize < samples) {
-		node->out[0]->bufsize = samples;
-		node->out[0]->buf = realloc(node->out[0]->buf, size);
-	}
-	if (node->out[1]->bufsize < node->inp[0]->samples) {
-		node->out[1]->bufsize = samples;
-		node->out[1]->buf = realloc(node->out[1]->buf, size);
-	}
+	rex = alloca(size);
+	imx = alloca(size);
 
-	memcpy(node->out[0]->buf, node->inp[0]->buf, size);
-	memset(node->out[1]->buf, 0, size);
-	fft(node->out[0]->buf, node->out[1]->buf, samples);
-	node->out[0]->samples = samples/2;
-	node->out[1]->samples = samples/2;
+	memcpy(rex, node->inp[0]->buf, size);
+	memset(imx, 0, size);
+
+	fft(rex, imx, samples);
+
+	memcpy(node->out[0]->buf, rex, size/2);
+	memcpy(node->out[1]->buf, imx, size/2);
 }
 
-// TODO
 static void
-signal_proc(void)
+rev_fft_proc(struct node *node)
 {
-	struct node *node;
+	size_t size;
+	int samples;
+	float *buf;
 
-	list_foreach (wind_nodes, node) {
-		switch (node->type) {
+	if (node->inp[0] == NULL || node->inp[1] == NULL)
+		return;
+
+	samples = node->out[0]->samples;
+	size = samples * sizeof (float);
+	buf = alloca(size);
+
+	memcpy(node->out[0]->buf, node->inp[0]->buf, size/2);
+	memset(node->out[0]->buf + samples/2, 0, size/2);
+	memcpy(buf, node->inp[1]->buf, size/2);
+	memset(buf + samples/2, 0, size/2);
+
+	rev_fft(buf, node->out[0]->buf, samples);
+}
+
+static void
+signal_proc_rec(struct node *node)
+{
+	int i;
+	struct links *link;
+	int *samples;
+	int bufsize;
+	float *buf;
+	int conn_count;
+
+	if (node == NULL || node->processed)
+		return;
+
+	switch (node->type) {
 		case WIND_MENU:
+			return;
+
 		case WIND_PLOT:
-			break;
+			link = find_link(NULL, node, -1, 0);
+			if (link != NULL)
+				return;
 
-		case WIND_GEN_SIN:
-			if (find_link(node, NULL, -1, -1) != NULL)
-				gensin(node);
+			signal_proc_rec(link->from);
 
-			break;
-
-		case WIND_GEN_MIC:
-			if (find_link(node, NULL, -1, -1) != NULL)
-				genmic(node);
-
-			break;
+			return;
 
 		case WIND_FFT:
-			fft_proc(node);
+			conn_count = 2;
+			samples = alloca(2 * sizeof (int));
+
+			samples[0] = node->out[0]->samples;
+
+			link = find_link(NULL, node, -1, 0);
+			if (link != NULL) {
+				signal_proc_rec(link->from);
+				samples[0] = node->inp[0]->samples;
+				samples[0] = pow(2, (int)log2(samples[0]))/2;
+			}
+
+			samples[1] = samples[0];
 
 			break;
 
 		case WIND_REV_FFT:
-			//rev_fft_proc(node);
+			conn_count = 1;
+			samples = alloca(sizeof (int));
+
+			samples[0] = node->out[0]->samples;
+
+			link = find_link(NULL, node, -1, 0);
+			if (link != NULL) {
+				signal_proc_rec(link->from);
+				samples[0] = node->inp[0]->samples*2;
+			}
+
+			link = find_link(NULL, node, -1, 1);
+			if (link != NULL) {
+				signal_proc_rec(link->from);
+				samples[0] = MIN(samples[0], node->inp[1]->samples*2);
+			}
 
 			break;
 
 		case WIND_TEE:
-			tee_proc(node);
+			conn_count = 2;
+			samples = alloca(2 * sizeof (int));
+
+			samples[0] = node->out[0]->samples;
+
+			link = find_link(NULL, node, -1, 0);
+			if (link != NULL) {
+				signal_proc_rec(link->from);
+				samples[0] = node->inp[0]->samples;
+			}
+
+			samples[1] = samples[0];
 
 			break;
+
+		case WIND_GEN_MIC:
+			conn_count = 1;
+			samples = alloca(sizeof (int));
+
+			samples[0] = samples[1] = node->mic_samples;
+
+			break;
+
+		case WIND_GEN_SIN:
+			conn_count = 1;
+			samples = alloca(sizeof (int));
+
+			samples[0] = samples[1] = node->sine_samples;
+
+			break;
+	}
+
+	for (i = 0; i < conn_count; ++i) {
+		node->out[i]->samples = samples[i];
+		bufsize = node->out[i]->bufsize;
+		buf = node->out[i]->buf;
+
+		if (bufsize < samples[i]) {
+			bufsize = samples[i];
+			buf = xrealloc(buf, bufsize * sizeof (float));
+
+			node->out[i]->bufsize = bufsize;
+			node->out[i]->buf = buf;
 		}
 	}
+
+	if (node->type == WIND_FFT)
+		fft_proc(node);
+	else if (node->type == WIND_REV_FFT)
+		rev_fft_proc(node);
+	else if (node->type == WIND_TEE)
+		tee_proc(node);
+	else if (node->type == WIND_GEN_MIC)
+		genmic(node);
+	else if (node->type == WIND_GEN_SIN)
+		gensin(node);
+
+	node->processed = 1;
+}
+
+static void
+signal_proc(void)
+{
+	struct links *link;
+	struct node *node;
+
+	list_foreach(wind_nodes, node)
+		node->processed = 0;
+
+	list_foreach(links, link)
+		if (link->to->type == WIND_PLOT)
+			signal_proc_rec(link->from);
 }
 
 int
@@ -367,11 +481,11 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->w = 250;
 		node->icon = 0;
 		node->ocon = 1;
+		node->sine_samples = 512;
 
 		node->out = xmalloc(sizeof (struct connector*));
 		node->out[0] = xmalloc(sizeof (struct connector));
 		memset(node->out[0], 0, sizeof (struct connector));
-		node->out[0]->samples = 512;
 
 		node->step = 1;
 
@@ -388,12 +502,12 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->w = 250;
 		node->icon = 0;
 		node->ocon = 1;
+		node->mic_samples = 512;
 
 		node->inp = NULL;
 		node->out = xmalloc(sizeof (struct connector*));
 		node->out[0] = xmalloc(sizeof (struct connector));
 		memset(node->out[0], 0, sizeof (struct connector));
-		node->out[0]->samples = 1024;
 
 		node->gain = 1.0;
 
@@ -494,12 +608,14 @@ gensin_content(struct nk_context *ctx, struct node *node)
 	char text[512];
 
 	nk_layout_row_dynamic(ctx, 15, 2);
+
 	sprintf(text, "Frequency: %.2f", node->step);
 	nk_label(ctx, text, NK_TEXT_LEFT);
 	nk_slider_float(ctx, 0, &node->step, 10, 0.01);
-	sprintf(text, "Samples: %d", node->out[0]->samples);
+
+	sprintf(text, "Samples: %d", node->sine_samples);
 	nk_label(ctx, text, NK_TEXT_LEFT);
-	nk_slider_int(ctx, 0, &node->out[0]->samples, 4096, 16);
+	nk_slider_int(ctx, 0, &node->sine_samples, 4096, 16);
 }
 
 static void
@@ -568,6 +684,8 @@ wind_draw(struct nk_context *ctx)
 	    NK_WINDOW_BORDER | NK_WINDOW_TITLE;// | NK_WINDOW_CLOSABLE;
 	struct links *link;
 
+	set_micbuf();
+
 	canvas = nk_window_get_canvas(ctx);
 	total_space = nk_window_get_content_region(ctx);
 	nk_layout_space_begin(ctx, NK_STATIC, total_space.h, nodecount);
@@ -591,11 +709,7 @@ wind_draw(struct nk_context *ctx)
 			break;
 
 		case WIND_TEE:
-			break;
-
 		case WIND_FFT:
-			break;
-
 		case WIND_REV_FFT:
 			break;
 
