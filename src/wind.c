@@ -194,13 +194,14 @@ static void
 set_micbuf(void)
 {
 	int i;
+	int16_t buf[512];
 	int samples = MICBUF_SAMPLES;
-	int16_t buf[samples];
 
-	read(oss_fd, buf, samples * sizeof (int16_t));
+	memmove(micbuf, micbuf + 512, (samples - 512) * sizeof (int16_t));
+	read(oss_fd, buf, 512 * sizeof (int16_t));
 
-	for (i = 0; i < samples; ++i)
-		micbuf[i] = (float)buf[i]/INT16_MAX;
+	for (i = 0; i < 512; ++i)
+		micbuf[samples - 512 + i] = (float)buf[i]/INT16_MAX;
 }
 
 static void
@@ -589,11 +590,14 @@ menu_content(struct nk_context *ctx, struct node *node)
 		node->x = node->y = 0;
 		node->h = 250;
 		node->w = 400;
-		node->icon = 1;
+		node->icon = 4;
 		node->ocon = 0;
 
-		node->inp = xmalloc(sizeof (struct connector*));
+		node->inp = xmalloc(4 * sizeof (struct connector*));
 		node->inp[0] = NULL;
+		node->inp[1] = NULL;
+		node->inp[2] = NULL;
+		node->inp[3] = NULL;
 
 		node->maxval =  1.0;
 		node->minval = -1.0;
@@ -632,34 +636,50 @@ genmic_content(struct nk_context *ctx, struct node *node)
 static void
 plot_content(struct nk_context *ctx, struct node *node)
 {
-	int i;
+	int i, j;
 	char text[512];
-	int samples;
+	int max_samples = 64;
+
+	for (i = 0; i < 4; ++i) {
+		if (node->inp[i] == NULL)
+			continue;
+
+		max_samples = MAX(max_samples, node->inp[i]->samples);
+	}
 
 	nk_layout_row_dynamic(ctx, 100, 1);
-	if (node->inp[0] != NULL) {
-		if (nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
-		    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), node->inp[0]->samples,
-		    node->minval, node->maxval)) {
-			float *buf = node->inp[0]->buf;
+	if (nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
+	    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), max_samples,
+	    node->minval, node->maxval)) {
+		nk_chart_add_slot_colored(ctx, NK_CHART_LINES_NO_RECT,
+		    nk_rgb(0,0xFF,0), nk_rgb(0,0,0), max_samples,
+		    node->minval, node->maxval);
+		nk_chart_add_slot_colored(ctx, NK_CHART_LINES_NO_RECT,
+		    nk_rgb(0,0,0xFF), nk_rgb(0,0,0), max_samples,
+		    node->minval, node->maxval);
+		nk_chart_add_slot_colored(ctx, NK_CHART_LINES_NO_RECT,
+		    nk_rgb(0xFF,0xFF,0), nk_rgb(0,0,0), max_samples,
+		    node->minval, node->maxval);
 
-			for (i = 0; i < node->inp[0]->samples; ++i) {
-				if (buf[i] >= node->maxval)
-					nk_chart_push_slot(ctx, node->maxval, 0);
-				else if (buf[i] <= node->minval)
-					nk_chart_push_slot(ctx, node->minval, 0);
+		for (i = 0; i < 4; ++i) {
+			for (j = 0; j < max_samples; ++j) {
+				float *buf;
+
+				if (node->inp[i] == NULL || j >= node->inp[i]->samples) {
+					nk_chart_push_slot(ctx, 0, i);
+					continue;
+				}
+
+				buf = node->inp[i]->buf;
+
+				if (buf[j] >= node->maxval)
+					nk_chart_push_slot(ctx, node->maxval, i);
+				else if (buf[j] <= node->minval)
+					nk_chart_push_slot(ctx, node->minval, i);
 				else
-					nk_chart_push_slot(ctx, buf[i], 0);
+					nk_chart_push_slot(ctx, buf[j], i);
 			}
 		}
-
-		samples = node->inp[0]->samples;
-	}
-	else {
-		nk_chart_begin_colored(ctx, NK_CHART_LINES_NO_RECT,
-		    nk_rgb(0xFF,0,0), nk_rgb(0,0,0), 0, -1, 1);
-
-		samples = 0;
 	}
 
 	nk_layout_row_dynamic(ctx, 15, 2);
@@ -667,7 +687,7 @@ plot_content(struct nk_context *ctx, struct node *node)
 	nk_label(ctx, text, NK_TEXT_LEFT);
 	sprintf(text, "Min value: %.2f", node->minval);
 	nk_label(ctx, text, NK_TEXT_LEFT);
-	sprintf(text, "Samples: %d", samples);
+	sprintf(text, "Samples: %d", max_samples);
 	nk_label(ctx, text, NK_TEXT_LEFT);
 	nk_slider_float(ctx, 1, &node->maxval, 40, 1);
 	node->minval = -node->maxval;
